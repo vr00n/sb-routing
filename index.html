@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Special Needs Student Routing</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+          integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+          crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+            crossorigin=""></script>
+    <script src="https://unpkg.com/polyline-encoded@0.0.9/Polyline.encoded.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        #map { height: 500px; width: 100%; border-radius: 0.5rem; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .leaflet-popup-content-wrapper { border-radius: 0.375rem; }
+        .table-container { max-height: 400px; overflow-y: auto; }
+        /* Custom marker styling */
+        .pickup-marker-icon {
+            background-color: #3b82f6; /* blue-500 */
+            color: white;
+            border-radius: 50%;
+            text-align: center;
+            font-weight: bold;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .school-marker-icon {
+            background-color: #10b981; /* emerald-500 */
+            color: white;
+            border-radius: 0.25rem; /* square-ish */
+            text-align: center;
+            font-weight: bold;
+            padding: 2px 4px;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .progress-indicator {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.85); 
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: #333;
+            flex-direction: column; 
+        }
+        #progressLogContainer {
+            margin-top: 1rem;
+            font-size: 0.8rem; 
+            color: #4b5563; 
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 0.5rem;
+            border-radius: 0.375rem; 
+            max-height: 10rem; 
+            width: 80%;
+            max-width: 500px; 
+            overflow-y: auto;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border: 1px solid #e5e7eb; 
+        }
+        #progressLogMessages p {
+            margin-bottom: 0.25rem;
+            line-height: 1.2;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+    <div class="container mx-auto max-w-7xl bg-white p-6 rounded-lg shadow-xl">
+        <header class="mb-6 text-center">
+            <h1 class="text-3xl font-bold text-gray-700">Special Needs Student Route Generator</h1>
+        </header>
+
+        <div class="mb-6 p-4 border border-blue-200 rounded-lg bg-blue-50">
+            <h2 class="text-xl font-semibold text-blue-700 mb-2">Instructions & Constraints</h2>
+            <ul class="list-disc list-inside text-sm text-gray-600 space-y-1">
+                <li>Upload a CSV file with student data. Columns: <code>Pupil_Id_No, Hndc_Code, School_Code_&_Name, Sess_Beg., pupil_lat, pupil_lon, school_lat, school_lon</code>.</li>
+                <li>Max travel time per student: 100 minutes.</li>
+                <li>Wait time: 3 mins for 1st pickup on a route, 1 min for subsequent pickups.</li>
+                <li>Route capacity: Max 15 students, min 4 students (otherwise marked infeasible), max 5 distinct schools.</li>
+                <li>Feasibility: Arrive at school by session begin time.</li>
+                <li>Earliest pickup: 6:00 AM.</li>
+                <li>Routing uses public OSRM API (<code>http://router.project-osrm.org</code>). This server has rate limits and is not for production use. Frequent "Failed to fetch" errors may indicate these limits are being hit or the server is temporarily unavailable. Try calculating metrics for fewer routes at a time or wait and try again.</li>
+            </ul>
+        </div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            <div class="md:col-span-1 space-y-4">
+                <div>
+                    <label for="csvFile" class="block text-sm font-medium text-gray-700 mb-1">Upload CSV File:</label>
+                    <input type="file" id="csvFile" accept=".csv" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer border border-gray-300 rounded-md p-1">
+                    </div>
+                <button id="generateRoutesBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md transition duration-150 ease-in-out shadow-md disabled:opacity-50">
+                    Generate Routes (Heuristic)
+                </button>
+                 <div id="errorMessage" class="text-red-500 text-sm mt-2"></div>
+            </div>
+
+            <div class="md:col-span-2">
+                 <div id="map" class="rounded-lg shadow-md"></div>
+            </div>
+        </div>
+
+        <div id="progressIndicator" class="progress-indicator hidden">
+            <div class="text-center">
+                <svg class="animate-spin h-10 w-10 text-blue-600 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                Processing... Please wait.
+            </div>
+            <div id="progressLogContainer">
+                <p id="progressLogHeader" class="font-semibold mb-1 text-center">Activity Log:</p>
+                <div id="progressLogMessages"></div>
+            </div>
+        </div>
+        
+        <div>
+            <h2 class="text-2xl font-semibold text-gray-700 mb-3">Generated Routes</h2>
+            <div class="table-container border border-gray-200 rounded-lg shadow">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Route ID</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Pickups</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Schools</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Max Travel (min)</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">First Pickup</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Feasible</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Duration (min)</th>
+                            <th class="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="routesTableBody" class="bg-white divide-y divide-gray-200">
+                        </tbody>
+                </table>
+            </div>
+             <p id="unroutedPupilsMessage" class="mt-4 text-sm text-orange-600"></p>
+        </div>
+    </div>
+    
+    <script>
+        function displayError(message) {
+            const errorDiv = document.getElementById('errorMessage'); 
+            if (errorDiv) {
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block'; 
+                if (message && !message.toUpperCase().startsWith("CRITICAL ERROR") && !message.toUpperCase().includes("OSRM API ERROR")) {
+                     setTimeout(() => { 
+                         if(errorDiv && errorDiv.textContent === message) errorDiv.textContent = ''; 
+                     }, 10000); // Increased timeout for errors
+                }
+            } else {
+                console.warn("displayError called, but 'errorMessage' div not found. Falling back to alert. Message:", message);
+                alert(message); 
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const MIN_PICKUP_TIME_MINUTES = 360; 
+            const MIN_PICKUPS_PER_ROUTE = 4; 
+
+            const map = L.map('map').setView([40.7128, -74.0060], 10); 
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            }).addTo(map);
+            let routeLayers = L.layerGroup().addTo(map); 
+
+            const csvFileInput = document.getElementById('csvFile');
+            const generateRoutesBtn = document.getElementById('generateRoutesBtn');
+            const routesTableBody = document.getElementById('routesTableBody');
+            const progressIndicator = document.getElementById('progressIndicator');
+            const unroutedPupilsMessage = document.getElementById('unroutedPupilsMessage');
+            const progressLogMessagesDiv = document.getElementById('progressLogMessages');
+            const MAX_LOG_MESSAGES = 20; 
+
+            function updateProgressLog(message) {
+                if (progressLogMessagesDiv) {
+                    const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                    const newMessageP = document.createElement('p');
+                    newMessageP.textContent = `[${timestamp}] ${message}`;
+                    progressLogMessagesDiv.appendChild(newMessageP);
+                    while (progressLogMessagesDiv.childNodes.length > MAX_LOG_MESSAGES) {
+                        progressLogMessagesDiv.removeChild(progressLogMessagesDiv.firstChild);
+                    }
+                    progressLogMessagesDiv.scrollTop = progressLogMessagesDiv.scrollHeight; 
+                } else {
+                    console.log(`[Progress Log Attempt]: ${message}`);
+                }
+            }
+
+            function timeToMinutes(timeStr) { 
+                if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) {
+                    console.warn(`Invalid time string: ${timeStr}`); return null; 
+                }
+                const parts = timeStr.split(':');
+                if (parts.length !== 2) { console.warn(`Invalid time string format: ${timeStr}`); return null; }
+                const hours = parseInt(parts[0], 10), minutes = parseInt(parts[1], 10);
+                if (isNaN(hours) || isNaN(minutes)) { console.warn(`Non-numeric time parts: ${timeStr}`); return null; }
+                return hours * 60 + minutes;
+            }
+
+            function minutesToTime(totalMinutes) {
+                if (totalMinutes === null || totalMinutes === undefined || totalMinutes === Infinity || isNaN(totalMinutes)) return "--:--";
+                const hours = Math.floor(totalMinutes / 60), minutes = Math.round(totalMinutes % 60);
+                return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+            }
+
+            function showProgress(show, message = "Processing...") {
+                const progressTextElement = progressIndicator.querySelector('.text-center > div:not(#progressLogContainer)');
+                if(progressTextElement && progressTextElement.childNodes.length > 1 && progressTextElement.childNodes[1].nodeType === Node.TEXT_NODE) {
+                     progressTextElement.childNodes[1].nodeValue = ` ${message} Please wait.`;
+                } else if (progressTextElement) { // Fallback if structure is slightly different
+                    progressTextElement.textContent = message + " Please wait.";
+                }
+
+                progressIndicator.classList.toggle('hidden', !show);
+                generateRoutesBtn.disabled = show;
+                if (show && progressLogMessagesDiv) {
+                    progressLogMessagesDiv.innerHTML = ''; 
+                }
+            }
+            
+            const osrmService = {
+                getRoute: async (waypoints) => {
+                    if (!waypoints || waypoints.length < 2) {
+                        updateProgressLog("OSRM: Invalid waypoints (less than 2).");
+                        return { code: "InvalidInput", routes: [] };
+                    }
+                    const coordinatesString = waypoints.map(wp => `${wp.lon},${wp.lat}`).join(';');
+                    const url = `http://router.project-osrm.org/route/v1/driving/${coordinatesString}?steps=true&alternatives=false&overview=full`; 
+                    try {
+                        await new Promise(resolve => setTimeout(resolve, 1500)); // Increased delay to 1.5 seconds
+                        const response = await fetch(url);
+                        if (!response.ok) {
+                            const errorText = await response.text();
+                            console.error("OSRM API Error:", response.status, errorText, "URL:", url);
+                            updateProgressLog(`OSRM API Error ${response.status} for URL: ${url.substring(0,100)}... Check console.`);
+                            displayError(`OSRM API Error ${response.status}. The OSRM server might be busy or rate limiting. Please try again later or with fewer routes. Check console for details.`);
+                            return { code: `Error ${response.status}`, message: errorText, routes: [] };
+                        }
+                        const data = await response.json();
+                        if (data.code === "Ok" && data.routes && data.routes.length > 0) {
+                            const route = data.routes[0];
+                            return {
+                                code: "Ok",
+                                routes: [{ 
+                                    duration: route.duration, 
+                                    distance: route.distance, 
+                                    geometry: route.geometry, 
+                                    legs: route.legs ? route.legs.map(leg => ({
+                                        duration: leg.duration, 
+                                        distance: leg.distance  
+                                    })) : [], 
+                                }],
+                                waypoints: data.waypoints 
+                            };
+                        } else {
+                            updateProgressLog(`OSRM: ${data.code || 'NoRoute'} - ${data.message || 'No route found'} for URL: ${url.substring(0,100)}...`);
+                            return { code: data.code || "NoRoute", message: data.message, routes: [] };
+                        }
+                    } catch (error) {
+                        console.error("Network or OSRM fetch error:", error, "URL:", url);
+                        updateProgressLog(`Network error (Failed to fetch) calling OSRM: ${error.message}. URL: ${url.substring(0,100)}...`);
+                        displayError("Network Error: Failed to fetch data from OSRM. Check your internet connection or try again later. The OSRM server might be temporarily unavailable or rate limiting requests.");
+                        return { code: "NetworkError", message: error.message, routes: [] };
+                    }
+                }
+            };
+
+            function haversineDistance(coords1, coords2) { 
+                const R = 6371; 
+                const lat1 = coords1.lat, lon1 = coords1.lon, lat2 = coords2.lat, lon2 = coords2.lon;
+                const dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
+                const rLat1 = lat1 * Math.PI / 180, rLat2 = lat2 * Math.PI / 180;
+                const a = Math.sin(dLat / 2) ** 2 + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLon / 2) ** 2;
+                return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))); 
+            }
+
+            function robustParseCsvLine(lineString) {
+                const fields = [];
+                const regex = /(?:"((?:[^"]|"")*)"|([^,]*))(?:,|$)/g;
+                let match;
+                let lastIndex = -1; 
+                if (typeof lineString !== 'string') return []; 
+                const trimmedLine = lineString.trim(); 
+                if (trimmedLine === "") return [];
+                while ((match = regex.exec(trimmedLine)) !== null) {
+                    if (match.index === lastIndex && match[0] === '') break; 
+                    lastIndex = regex.lastIndex;
+                    let fieldValue = (match[1] !== undefined) ? match[1].replace(/""/g, '"') : (match[2] !== undefined ? match[2] : "");
+                    fields.push(fieldValue);
+                }
+                return fields;
+            }
+
+            function parseCSV(csvText) {
+                const lines = csvText.trim().split(/\r?\n/);
+                if (lines.length === 0 || (lines.length === 1 && lines[0].trim() === "")) {
+                    return { data: [], errors: [{ message: "CSV is empty or contains only whitespace." }] };
+                }
+                const headerLine = lines[0];
+                const headersRaw = robustParseCsvLine(headerLine); 
+                const headers = headersRaw.map(h => h.trim()); 
+                if (headers.length === 0 || (headers.length === 1 && headers[0] === "" && headersRaw.length === 1)) {
+                     return { data: [], errors: [{ message: "CSV header is empty or invalid after parsing." }] };
+                }
+                const data = [];
+                const errors = [];
+                for (let i = 1; i < lines.length; i++) {
+                    const lineStr = lines[i];
+                    if (lineStr.trim() === "") continue; 
+                    const values = robustParseCsvLine(lineStr); 
+                    if (values.length !== headers.length) {
+                        errors.push({ 
+                            message: `Row ${i+1} (content: "${lineStr.substring(0,70)}..."): Expected ${headers.length} columns (Headers: [${headers.join(', ')}]), but found ${values.length} columns (Values: [${values.map(v => `"${v}"`).join(', ')}]). Skipping row.` 
+                        });
+                        continue;
+                    }
+                    const rowObject = {};
+                    headers.forEach((header, index) => { rowObject[header] = values[index]; });
+                    data.push(rowObject);
+                }
+                return { data, errors };
+            }
+            
+            csvFileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const csvText = e.target.result;
+                        updateProgressLog(`CSV file "${file.name}" loaded. Parsing...`);
+                        const parseResult = parseCSV(csvText);
+                        if (parseResult.errors.length > 0) {
+                            const errorMessages = parseResult.errors.map(err => err.message).join('\n'); 
+                            displayError(`CSV parsing issues:\n${errorMessages}`);
+                            updateProgressLog(`CSV parsing issues found. See error message above.`);
+                        } else {
+                             updateProgressLog(`CSV parsed successfully. ${parseResult.data.length} rows found.`);
+                        }
+                        allPupilData = parseResult.data.map(row => ({
+                            ...row, 
+                            pupil_lat: parseFloat(row.pupil_lat),
+                            pupil_lon: parseFloat(row.pupil_lon),
+                            school_lat: parseFloat(row.school_lat),
+                            school_lon: parseFloat(row.school_lon),
+                            Sess_Beg_Minutes: timeToMinutes(row['Sess_Beg.']) 
+                        })).filter(p => 
+                            !isNaN(p.pupil_lat) && !isNaN(p.pupil_lon) &&
+                            !isNaN(p.school_lat) && !isNaN(p.school_lon) &&
+                            p.Sess_Beg_Minutes !== null && p['School_Code_&_Name'] 
+                        );
+                        updateProgressLog(`${allPupilData.length} valid student records after filtering.`);
+                        if (allPupilData.length === 0 && parseResult.data.length > 0 && parseResult.errors.length === 0) {
+                            displayError("CSV parsed successfully, but no valid student data found after processing filters. Check data values and expected column names (e.g., 'Sess_Beg.', 'School_Code_&_Name').");
+                        } else if (allPupilData.length > 0 && parseResult.errors.length === 0) {
+                            displayError(""); 
+                            console.log("Parsed Pupil Data (Manual):", allPupilData);
+                        } else if (allPupilData.length === 0 && parseResult.errors.length === 0) { 
+                             displayError("No data parsed from CSV. The file might be empty or all rows were invalid after processing.");
+                        }
+                    };
+                    reader.onerror = function() {
+                        displayError("Error reading the CSV file.");
+                        updateProgressLog("Error reading the CSV file.");
+                        allPupilData = [];
+                    };
+                    reader.readAsText(file);
+                }
+            });
+
+            generateRoutesBtn.addEventListener('click', async () => {
+                if (allPupilData.length === 0) {
+                    displayError("Please upload and process a valid CSV file with student data first.");
+                    return;
+                }
+                showProgress(true, "Generating heuristic routes...");
+                updateProgressLog("Heuristic route generation process started...");
+                unroutedPupilsMessage.textContent = '';
+                routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">Generating heuristic routes...</td></tr>'; 
+                try {
+                    await new Promise(resolve => setTimeout(resolve, 50)); 
+                    generatedRoutesData = await mainRouteGenerationAlgorithm(allPupilData); 
+                    displayRoutes(generatedRoutesData); 
+                    updateProgressLog(`Heuristic route generation complete. ${generatedRoutesData.length} routes created.`);
+                     if (generatedRoutesData.length === 0 && allPupilData.length > 0) { 
+                         displayError("No heuristic routes could be formed. Check data or constraints.");
+                         updateProgressLog("No heuristic routes formed.");
+                    }
+                } catch (error) {
+                    console.error("Error during heuristic route generation:", error);
+                    displayError(`Error generating heuristic routes: ${error.message || 'Unknown error'}`);
+                    updateProgressLog(`ERROR during heuristic route generation: ${error.message || 'Unknown error'}`);
+                } finally {
+                    showProgress(false); 
+                }
+            });
+            
+            async function handleCalculateMetricsClick(routeId) {
+                const routeIndex = generatedRoutesData.findIndex(r => r.id === routeId);
+                if (routeIndex === -1) return;
+
+                const routeToEvaluate = generatedRoutesData[routeIndex];
+                
+                const tableRow = routesTableBody.querySelector(`tr[data-route-id="${routeId}"]`);
+                const buttonCell = tableRow ? tableRow.cells[7] : null; 
+                if (buttonCell) buttonCell.innerHTML = '<span class="text-xs italic text-gray-500">Calculating...</span>';
+
+                showProgress(true, `Calculating metrics for Route ${routeId}...`);
+                updateProgressLog(`Calculating OSRM metrics for Route ${routeId}...`);
+
+                const evaluatedRoute = await evaluateHeuristicRouteWithOSRM(routeToEvaluate, parseInt(routeId.substring(1)));
+
+                generatedRoutesData[routeIndex] = evaluatedRoute; 
+                generatedRoutesData[routeIndex].osrmEvaluated = true; 
+                
+                updateProgressLog(`Metrics calculated for Route ${routeId}. Feasible: ${evaluatedRoute.metrics.isFeasible}. Reason: ${evaluatedRoute.metrics.infeasibilityReason || 'N/A'}`);
+                
+                displayRoutes(generatedRoutesData); 
+                showProgress(false);
+            }
+
+
+            async function evaluateHeuristicRouteWithOSRM(originalRouteData, routeIdNum) {
+                const route = JSON.parse(JSON.stringify(originalRouteData));
+                route.id = `R${routeIdNum}`; 
+                route.pupils = []; 
+                route.schoolStops = [];
+                route.mapWaypoints = []; 
+                route.metrics = { 
+                    numberOfPickups: 0, numberOfSchools: 0, maxTravelTimeObserved: 'N/A', 
+                    firstPickupTimeActual: 'N/A', isFeasible: 'Pending', totalRouteDurationMinutes: 'N/A', 
+                    infeasibilityReason: "" 
+                };
+                route.osrmPolyline = null;
+
+                const waypointsForOSRMFiltered = originalRouteData.orderedWaypointsForOSRM.filter((wp, index, self) =>
+                    index === 0 || !(wp.lat === self[index-1].lat && wp.lon === self[index-1].lon)
+                );
+
+                if (!waypointsForOSRMFiltered || waypointsForOSRMFiltered.length < 2) {
+                    route.metrics.isFeasible = false;
+                    route.metrics.infeasibilityReason = "Not enough unique waypoints for OSRM.";
+                    updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                    return route; 
+                }
+
+                const osrmResult = await osrmService.getRoute(waypointsForOSRMFiltered);
+
+                if (osrmResult.code !== "Ok" || !osrmResult.routes || osrmResult.routes.length === 0) {
+                    route.metrics.isFeasible = false;
+                    route.metrics.infeasibilityReason = `OSRM routing failed: ${osrmResult.message || osrmResult.code}`;
+                    updateProgressLog(`R${routeIdNum} Eval: OSRM failed - ${route.metrics.infeasibilityReason}`);
+                    return route; 
+                }
+                
+                route.osrmPolyline = osrmResult.routes[0].geometry; 
+                const osrmRouteData = osrmResult.routes[0];
+                const osrmLegs = osrmRouteData.legs;
+                let currentTimeMinutes = MIN_PICKUP_TIME_MINUTES; 
+                let firstPickupActualTime = Infinity;
+                let pickupSequence = 1;
+                let osrmLegCounter = 0; 
+
+                for (let i = 0; i < originalRouteData.pupilsData.length; i++) {
+                    const pupilData = originalRouteData.pupilsData[i];
+                    let travelToThisPickupMinutes = 0;
+                    if (i > 0) {
+                        const prevPupilData = originalRouteData.pupilsData[i-1];
+                        if (pupilData.pupil_lat !== prevPupilData.pupil_lat || pupilData.pupil_lon !== prevPupilData.pupil_lon) {
+                            if (osrmLegs && osrmLegCounter < osrmLegs.length) {
+                                travelToThisPickupMinutes = osrmLegs[osrmLegCounter].duration / 60;
+                                osrmLegCounter++;
+                            } else {
+                                route.metrics.isFeasible = false;
+                                route.metrics.infeasibilityReason = `OSRM leg data mismatch for pupil ${pupilData.Pupil_Id_No} travel.`;
+                                updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                                return route;
+                            }
+                        } 
+                        currentTimeMinutes += travelToThisPickupMinutes;
+                    }
+                    
+                    const pupilPickupTime = (i === 0) ? Math.max(currentTimeMinutes, MIN_PICKUP_TIME_MINUTES) : currentTimeMinutes;
+                    if (i === 0) currentTimeMinutes = pupilPickupTime; 
+
+                    if (pupilPickupTime < MIN_PICKUP_TIME_MINUTES) { 
+                        route.metrics.isFeasible = false;
+                        route.metrics.infeasibilityReason = `Pupil ${pupilData.Pupil_Id_No} pickup too early: ${minutesToTime(pupilPickupTime)}`;
+                        updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                        return route;
+                    }
+                    firstPickupActualTime = Math.min(firstPickupActualTime, pupilPickupTime);
+                    const waitTime = (i === 0) ? 3 : 1; 
+                    currentTimeMinutes += waitTime; 
+
+                    route.pupils.push({ data: pupilData, pickupTimeMinutes: pupilPickupTime, arrivalAtSchoolMinutes: null, travelTimeMinutes: null });
+                    route.mapWaypoints.push({ lat: pupilData.pupil_lat, lon: pupilData.pupil_lon, type: 'pickup', label: `P${pickupSequence}`, hndcCode: pupilData.Hndc_Code, pupilId: pupilData.Pupil_Id_No, sequence: pickupSequence++ });
+                }
+                
+                const schoolDataMap = new Map();
+                originalRouteData.pupilsData.forEach(p => {
+                    if (!schoolDataMap.has(p['School_Code_&_Name'])) {
+                        schoolDataMap.set(p['School_Code_&_Name'], {
+                            schoolCode: p['School_Code_&_Name'], schoolLat: p.school_lat, schoolLon: p.school_lon,
+                            sessionBeginMinutes: p.Sess_Beg_Minutes, 
+                            estimatedArrivalMinutes: null,
+                            pupilsToDrop: originalRouteData.pupilsData.filter(pd => pd['School_Code_&_Name'] === p['School_Code_&_Name']).map(pd => pd.Pupil_Id_No)
+                        });
+                    }
+                });
+                const sortedSchoolEntries = Array.from(schoolDataMap.values()).sort((a,b) => a.sessionBeginMinutes - b.sessionBeginMinutes);
+                let lastLocationForOsrm = originalRouteData.pupilsData.length > 0 ? 
+                    { lat: originalRouteData.pupilsData[originalRouteData.pupilsData.length-1].pupil_lat, lon: originalRouteData.pupilsData[originalRouteData.pupilsData.length-1].pupil_lon } : 
+                    null;
+
+                for (const schoolEntry of sortedSchoolEntries) {
+                    let travelToSchoolMinutes = 0;
+                    if (lastLocationForOsrm && (lastLocationForOsrm.lat !== schoolEntry.schoolLat || lastLocationForOsrm.lon !== schoolEntry.schoolLon)) {
+                        if (osrmLegs && osrmLegCounter < osrmLegs.length) {
+                            travelToSchoolMinutes = osrmLegs[osrmLegCounter].duration / 60;
+                            osrmLegCounter++;
+                        } else {
+                            route.metrics.isFeasible = false;
+                            route.metrics.infeasibilityReason = `OSRM leg data mismatch for school ${schoolEntry.schoolCode} travel.`;
+                            updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                            return route;
+                        }
+                    }
+                    currentTimeMinutes += travelToSchoolMinutes;
+                    schoolEntry.estimatedArrivalMinutes = currentTimeMinutes;
+                    if (schoolEntry.estimatedArrivalMinutes > schoolEntry.sessionBeginMinutes + 1) { 
+                        route.metrics.isFeasible = false;
+                        route.metrics.infeasibilityReason = `Late for school ${schoolEntry.schoolCode}: Arr ${minutesToTime(schoolEntry.estimatedArrivalMinutes)} vs Sess ${minutesToTime(schoolEntry.sessionBeginMinutes)}`;
+                        updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                        return route;
+                    }
+                    route.schoolStops.push(schoolEntry); 
+                    route.mapWaypoints.push({ lat: schoolEntry.schoolLat, lon: schoolEntry.schoolLon, type: 'school', label: `S: ${schoolEntry.schoolCode.substring(0,6)}`, schoolCode: schoolEntry.schoolCode });
+                    lastLocationForOsrm = { lat: schoolEntry.schoolLat, lon: schoolEntry.schoolLon };
+                }
+
+                let maxTravelTimeObserved = 0;
+                for (let pupilOnRoute of route.pupils) {
+                    const schoolInfo = route.schoolStops.find(s => s.schoolCode === pupilOnRoute.data['School_Code_&_Name']);
+                    if (!schoolInfo || schoolInfo.estimatedArrivalMinutes === null) {
+                        route.metrics.isFeasible = false;
+                        route.metrics.infeasibilityReason = `Could not determine arrival for pupil ${pupilOnRoute.data.Pupil_Id_No} at school.`;
+                        updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                        return route;
+                    }
+                    pupilOnRoute.arrivalAtSchoolMinutes = schoolInfo.estimatedArrivalMinutes;
+                    pupilOnRoute.travelTimeMinutes = pupilOnRoute.arrivalAtSchoolMinutes - pupilOnRoute.pickupTimeMinutes;
+                    maxTravelTimeObserved = Math.max(maxTravelTimeObserved, pupilOnRoute.travelTimeMinutes);
+                    if (pupilOnRoute.travelTimeMinutes > 100) {
+                        route.metrics.isFeasible = false;
+                        route.metrics.infeasibilityReason = `Pupil ${pupilOnRoute.data.Pupil_Id_No} exceeds max travel time (${Math.round(pupilOnRoute.travelTimeMinutes)} min).`;
+                        updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
+                        return route;
+                    }
+                }
+                
+                route.metrics.numberOfPickups = route.pupils.length;
+                route.metrics.numberOfSchools = route.schoolStops.length;
+                route.metrics.maxTravelTimeObserved = Math.round(maxTravelTimeObserved);
+                route.metrics.firstPickupTimeActual = minutesToTime(firstPickupActualTime === Infinity ? null : firstPickupActualTime);
+                const lastDropoffTime = route.schoolStops.reduce((max, s) => Math.max(max, s.estimatedArrivalMinutes || 0), 0);
+                route.metrics.totalRouteDurationMinutes = (lastDropoffTime > firstPickupActualTime && firstPickupActualTime !== Infinity && lastDropoffTime !== 0) ? Math.round(lastDropoffTime - firstPickupActualTime) : 0;
+
+                let isFeasible = true; 
+                if (route.metrics.numberOfPickups === 0 || route.metrics.numberOfPickups > 15) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Invalid number of pickups."; }
+                if (route.metrics.numberOfPickups > 0 && route.metrics.numberOfPickups < MIN_PICKUPS_PER_ROUTE) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = `Too few pickups (${route.metrics.numberOfPickups}, min ${MIN_PICKUPS_PER_ROUTE}).`; }
+                if (route.metrics.numberOfSchools > 5) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Exceeds max schools."; }
+                if (route.metrics.numberOfSchools === 0 && route.metrics.numberOfPickups > 0) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Pupils assigned but no schools on route.";}
+                if (maxTravelTimeObserved > 100) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Exceeds max travel time.";}
+                if (firstPickupActualTime === Infinity && route.metrics.numberOfPickups > 0) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Invalid first pickup time.";}
+                if (firstPickupActualTime < MIN_PICKUP_TIME_MINUTES) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "First pickup too early.";}
+                route.schoolStops.forEach(s => { if (s.estimatedArrivalMinutes === null || s.estimatedArrivalMinutes > s.sessionBeginMinutes + 1) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = `Late for school ${s.schoolCode}.`;} });
+                
+                route.metrics.isFeasible = isFeasible;
+                if (!isFeasible && !route.metrics.infeasibilityReason) {
+                    route.metrics.infeasibilityReason = "General constraint violation.";
+                }
+                return route;
+            }
+
+
+            async function mainRouteGenerationAlgorithm(pupilDataList) {
+                updateProgressLog(`Starting heuristic algorithm with ${pupilDataList.length} pupils.`);
+                let unassignedPupilsInput = JSON.parse(JSON.stringify(pupilDataList)); 
+                let assignedPupilIds = new Set();
+                let routes = [];
+                let routeIdCounter = 1;
+                
+                unassignedPupilsInput.sort((a, b) => (a.Sess_Beg_Minutes - b.Sess_Beg_Minutes) || (String(a.Pupil_Id_No).localeCompare(String(b.Pupil_Id_No))));
+                updateProgressLog("Pupils sorted by session start time.");
+
+                let iterationGuard = 0; 
+                const MAX_MAIN_ITERATIONS = unassignedPupilsInput.length + 10; 
+
+                while (unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No)).length > 0 && iterationGuard < MAX_MAIN_ITERATIONS) {
+                    iterationGuard++;
+                    let currentRouteAttempt = {
+                        pupilsData: [], 
+                        orderedWaypointsForOSRM: [] 
+                    };
+
+                    const availablePupils = unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No));
+                    if (availablePupils.length === 0) break;
+
+                    updateProgressLog(`Attempting to build Heuristic Route R${routeIdCounter}. ${availablePupils.length} pupils remaining.`);
+                    
+                    let firstPupilForRoute = availablePupils[0]; 
+                                        
+                    updateProgressLog(`Heuristic R${routeIdCounter}: Seeded with pupil ${firstPupilForRoute.Pupil_Id_No}.`);
+                    currentRouteAttempt.pupilsData.push(firstPupilForRoute);
+                    assignedPupilIds.add(firstPupilForRoute.Pupil_Id_No); 
+                    let lastAddedPupilCoords = { lat: firstPupilForRoute.pupil_lat, lon: firstPupilForRoute.pupil_lon };
+
+                    while (currentRouteAttempt.pupilsData.length < 15) {
+                        let closestPupil = null;
+                        let closestDistance = Infinity;
+                        
+                        const candidatesForRoute = unassignedPupilsInput.filter(p => 
+                            !assignedPupilIds.has(p.Pupil_Id_No) 
+                        );
+
+                        if (candidatesForRoute.length === 0) break; 
+
+                        for (const candidate of candidatesForRoute) {
+                            const dist = haversineDistance(lastAddedPupilCoords, { lat: candidate.pupil_lat, lon: candidate.pupil_lon });
+                            const tempSchoolSet = new Set(currentRouteAttempt.pupilsData.map(p => p['School_Code_&_Name']));
+                            tempSchoolSet.add(candidate['School_Code_&_Name']);
+                            if (tempSchoolSet.size > 5) continue; 
+
+                            if (dist < closestDistance) {
+                                closestDistance = dist;
+                                closestPupil = candidate;
+                            }
+                        }
+
+                        if (closestPupil) {
+                            currentRouteAttempt.pupilsData.push(closestPupil);
+                            assignedPupilIds.add(closestPupil.Pupil_Id_No); 
+                            lastAddedPupilCoords = { lat: closestPupil.pupil_lat, lon: closestPupil.pupil_lon };
+                        } else {
+                            break; 
+                        }
+                    }
+                    updateProgressLog(`Heuristic R${routeIdCounter}: Built with ${currentRouteAttempt.pupilsData.length} pupils.`);
+
+                    currentRouteAttempt.orderedWaypointsForOSRM = currentRouteAttempt.pupilsData.map(p => ({
+                        lat: p.pupil_lat, lon: p.pupil_lon, type: 'pickup', pupilId: p.Pupil_Id_No, hndcCode: p.Hndc_Code,
+                    }));
+                    const schoolsOnRoute = new Map();
+                    currentRouteAttempt.pupilsData.forEach(p => {
+                        if (!schoolsOnRoute.has(p['School_Code_&_Name'])) {
+                            schoolsOnRoute.set(p['School_Code_&_Name'], {
+                                schoolCode: p['School_Code_&_Name'], schoolLat: p.school_lat, schoolLon: p.school_lon,
+                                sessionBeginMinutes: p.Sess_Beg_Minutes
+                            });
+                        }
+                    });
+                    const sortedSchoolStops = Array.from(schoolsOnRoute.values()).sort((a, b) => a.sessionBeginMinutes - b.sessionBeginMinutes);
+                    sortedSchoolStops.forEach(s => {
+                        currentRouteAttempt.orderedWaypointsForOSRM.push({ lat: s.schoolLat, lon: s.schoolLon, type: 'school', schoolCode: s.schoolCode });
+                    });
+                    
+                    if (currentRouteAttempt.pupilsData.length > 0) {
+                        const heuristicRoute = {
+                            id: `R${routeIdCounter}`,
+                            pupilsData: [...currentRouteAttempt.pupilsData],
+                            orderedWaypointsForOSRM: [...currentRouteAttempt.orderedWaypointsForOSRM],
+                            metrics: { 
+                                numberOfPickups: currentRouteAttempt.pupilsData.length,
+                                numberOfSchools: schoolsOnRoute.size,
+                                maxTravelTimeObserved: 'N/A',
+                                firstPickupTimeActual: 'N/A',
+                                isFeasible: 'Pending', 
+                                totalRouteDurationMinutes: 'N/A',
+                                infeasibilityReason: ''
+                            },
+                            osrmEvaluated: false,
+                            osrmPolyline: null,
+                            mapWaypoints: currentRouteAttempt.orderedWaypointsForOSRM.map((wp, idx) => ({
+                                ...wp,
+                                sequence: wp.type === 'pickup' ? (currentRouteAttempt.orderedWaypointsForOSRM.filter((w, i) => w.type === 'pickup' && i <= idx).length) : undefined
+                            }))
+                        };
+                        routes.push(heuristicRoute);
+                        routeIdCounter++; 
+                    } else {
+                         updateProgressLog(`Heuristic R${routeIdCounter} built with 0 pupils. Discarding and unassigning seed.`);
+                         assignedPupilIds.delete(firstPupilForRoute.Pupil_Id_No); 
+                    }
+                } 
+
+                const stillUnassignedCount = unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No)).length;
+                if (stillUnassignedCount > 0) {
+                    unroutedPupilsMessage.textContent = `${stillUnassignedCount} pupil(s) could not be heuristically grouped.`;
+                    updateProgressLog(`${stillUnassignedCount} pupil(s) ultimately ungrouped by heuristic.`);
+                    console.warn("Ungrouped pupils details:", unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No))); 
+                }
+                return routes;
+            }
+
+
+            function displayRoutes(routes) {
+                routesTableBody.innerHTML = ''; 
+                if (!routes || !routes.length) { 
+                    routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">No routes generated.</td></tr>'; return;
+                }
+                let validRoutesDisplayed = 0;
+                routes.forEach(route => {
+                    if(!route || !route.pupilsData || route.pupilsData.length === 0) return;  
+                    validRoutesDisplayed++;
+                    const r = routesTableBody.insertRow();
+                    r.setAttribute('data-route-id', route.id); 
+                    r.className = `cursor-pointer hover:bg-gray-50 ${route.metrics.isFeasible === true ? '' : (route.metrics.isFeasible === false ? 'bg-red-50 text-red-700' : '')}`;
+                    
+                    r.insertCell().textContent = route.id;
+                    r.insertCell().textContent = route.metrics.numberOfPickups;
+                    r.insertCell().textContent = route.metrics.numberOfSchools;
+                    r.insertCell().textContent = route.metrics.maxTravelTimeObserved;
+                    r.insertCell().textContent = route.metrics.firstPickupTimeActual;
+                    const feasibleCell = r.insertCell();
+                    feasibleCell.textContent = typeof route.metrics.isFeasible === 'boolean' ? (route.metrics.isFeasible ? 'Yes' : 'No') : route.metrics.isFeasible; 
+                    if(typeof route.metrics.isFeasible === 'boolean') {
+                        feasibleCell.className = route.metrics.isFeasible ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
+                    }
+                    r.insertCell().textContent = route.metrics.totalRouteDurationMinutes;
+                    
+                    const actionsCell = r.insertCell();
+                    actionsCell.innerHTML = ''; 
+                    if (!route.osrmEvaluated) {
+                        const calcButton = document.createElement('button');
+                        calcButton.textContent = 'Calc Metrics';
+                        calcButton.className = 'bg-green-500 hover:bg-green-600 text-white text-xs py-1 px-2 rounded shadow';
+                        calcButton.onclick = (event) => {
+                            event.stopPropagation(); 
+                            handleCalculateMetricsClick(route.id);
+                        };
+                        actionsCell.appendChild(calcButton);
+                    } else {
+                        actionsCell.textContent = route.metrics.isFeasible ? 'Calculated' : `Failed (${(route.metrics.infeasibilityReason || '').substring(0,15)}...)`;
+                        actionsCell.title = route.metrics.infeasibilityReason || '';
+                        actionsCell.className = 'text-xs italic text-gray-500';
+                    }
+
+                    r.addEventListener('click', () => displayRouteOnMap(route));
+                });
+                if(validRoutesDisplayed === 0){ 
+                     routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">No valid routes with pupils were generated.</td></tr>';
+                }
+            }
+
+            function displayRouteOnMap(route) {
+                routeLayers.clearLayers(); 
+                const waypointsToDisplay = route.osrmEvaluated ? route.mapWaypoints : 
+                    (route.orderedWaypointsForOSRM || []).map((wp, idx) => ({ 
+                        ...wp,
+                        sequence: wp.type === 'pickup' ? (route.orderedWaypointsForOSRM.filter((w, i) => w.type === 'pickup' && i <= idx).length) : undefined
+                    }));
+
+                if (!waypointsToDisplay || waypointsToDisplay.length === 0) return;
+                
+                const latLngs = [];
+                waypointsToDisplay.forEach(wp => {
+                    if (typeof wp.lat !== 'number' || typeof wp.lon !== 'number' || isNaN(wp.lat) || isNaN(wp.lon)) { 
+                        console.warn("Invalid waypoint coordinates for map display:", wp);
+                        return; 
+                    }
+                    latLngs.push([wp.lat, wp.lon]);
+                    let markerHtml, markerSize, iconAnchorY;
+                    if (wp.type === 'pickup') {
+                        markerSize = [25, 25]; iconAnchorY = markerSize[1];
+                        markerHtml = `<div class="pickup-marker-icon flex items-center justify-center" style="width:${markerSize[0]}px; height:${markerSize[1]}px; line-height:${markerSize[1]}px;">${wp.sequence || '?'}</div>`;
+                        const pInfo = route.pupils?.find(p=>p.data.Pupil_Id_No === wp.pupilId) || route.pupilsData?.find(p=>p.Pupil_Id_No === wp.pupilId);
+                        L.marker([wp.lat, wp.lon], { icon: L.divIcon({ className: '', html: markerHtml, iconSize: markerSize, iconAnchor: [markerSize[0]/2, iconAnchorY] }) })
+                         .addTo(routeLayers).bindPopup(`<b>Pickup ${wp.sequence || '?'}</b><br>Pupil ID: ${wp.pupilId || 'N/A'}<br>Medical: ${wp.hndcCode || 'N/A'}<br>Time: ${pInfo && pInfo.pickupTimeMinutes ? minutesToTime(pInfo.pickupTimeMinutes) : 'N/A'}`);
+                    } else if (wp.type === 'school') {
+                        markerSize = [30,30]; iconAnchorY = markerSize[1];
+                        markerHtml = `<div class="school-marker-icon flex items-center justify-center" style="min-width:${markerSize[0]}px; height:${markerSize[1]}px; line-height:${markerSize[1]}px;">S</div>`;
+                        const sData = route.schoolStops?.find(s => s.schoolCode === wp.schoolCode) || 
+                                      Array.from(new Map((route.pupilsData || []).map(p => [p['School_Code_&_Name'], p])).values()).find(s => s['School_Code_&_Name'] === wp.schoolCode);
+                        L.marker([wp.lat, wp.lon], { icon: L.divIcon({ className: '', html: markerHtml, iconSize: markerSize, iconAnchor: [markerSize[0]/2, iconAnchorY]}) })
+                         .addTo(routeLayers).bindPopup(`<b>School: ${wp.schoolCode || 'N/A'}</b><br>Est. Arrival: ${sData && sData.estimatedArrivalMinutes ? minutesToTime(sData.estimatedArrivalMinutes) : 'N/A'}<br>Sess. Start: ${sData ? minutesToTime(sData.Sess_Beg_Minutes || sData.sessionBeginMinutes) : 'N/A'}`);
+                    }
+                });
+
+                if (route.osrmPolyline && typeof L.PolylineUtil !== 'undefined') {
+                    try {
+                        const decodedPolyline = L.PolylineUtil.decode(route.osrmPolyline);
+                        L.polyline(decodedPolyline, { color: 'green', weight: 4, opacity: 0.8 }).addTo(routeLayers);
+                    } catch (e) {
+                        console.error("Error decoding OSRM polyline:", e);
+                        if (latLngs.length > 1) L.polyline(latLngs, { color: 'orange', weight: 3, opacity: 0.7, dashArray: '5, 5' }).addTo(routeLayers); 
+                    }
+                } else if (latLngs.length > 1) {
+                     L.polyline(latLngs, { color: 'orange', weight: 3, opacity: 0.7, dashArray: '5, 5' }).addTo(routeLayers); 
+                }
+
+                if (latLngs.length > 0) { 
+                    try {
+                        const bounds = L.latLngBounds(latLngs);
+                        if (bounds.isValid()) {
+                           map.fitBounds(bounds, {padding: [50,50]});
+                        } else if (latLngs.length === 1) { 
+                           map.setView(latLngs[0], 15);
+                        }
+                    } catch (e) {
+                        console.error("Error fitting map bounds:", e, latLngs);
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
