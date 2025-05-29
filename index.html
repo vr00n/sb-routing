@@ -43,28 +43,28 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background-color: rgba(255, 255, 255, 0.85); 
+            background-color: rgba(255, 255, 255, 0.85);
             z-index: 9999;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 1.5rem;
             color: #333;
-            flex-direction: column; 
+            flex-direction: column;
         }
         #progressLogContainer {
             margin-top: 1rem;
-            font-size: 0.8rem; 
-            color: #4b5563; 
+            font-size: 0.8rem;
+            color: #4b5563; /* gray-600 */
             background-color: rgba(255, 255, 255, 0.9);
             padding: 0.5rem;
-            border-radius: 0.375rem; 
-            max-height: 10rem; 
+            border-radius: 0.375rem; /* rounded-md */
+            max-height: 10rem; /* Limit height */
             width: 80%;
-            max-width: 500px; 
+            max-width: 500px; /* Max width for readability */
             overflow-y: auto;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            border: 1px solid #e5e7eb; 
+            border: 1px solid #e5e7eb; /* gray-200 */
         }
         #progressLogMessages p {
             margin-bottom: 0.25rem;
@@ -87,7 +87,7 @@
                 <li>Route capacity: Max 15 students, min 4 students (otherwise marked infeasible), max 5 distinct schools.</li>
                 <li>Feasibility: Arrive at school by session begin time.</li>
                 <li>Earliest pickup: 6:00 AM.</li>
-                <li>Routing uses public OSRM API (<code>http://router.project-osrm.org</code>). This server has rate limits and is not for production use. Frequent "Failed to fetch" errors may indicate these limits are being hit or the server is temporarily unavailable. Try calculating metrics for fewer routes at a time or wait and try again.</li>
+                <li>Routing uses public OSRM API (<code>https://router.project-osrm.org</code>). This server has rate limits and is not for production use. Frequent "Failed to fetch" errors may indicate these limits are being hit or the server is temporarily unavailable. Try calculating metrics for fewer routes at a time or wait and try again.</li>
             </ul>
         </div>
         
@@ -147,55 +147,72 @@
     </div>
     
     <script>
+        // Global variable to store parsed pupil data
+        let allPupilData = [];
+        // Global variable to store generated routes data
+        let generatedRoutesData = [];
+
+        // Function to display error messages to the user.
+        // Avoids alert() for better UI integration.
         function displayError(message) {
             const errorDiv = document.getElementById('errorMessage'); 
             if (errorDiv) {
                 errorDiv.textContent = message;
-                errorDiv.style.display = 'block'; 
+                errorDiv.style.display = 'block'; // Make sure it's visible
+                // Auto-hide non-critical errors after some time
                 if (message && !message.toUpperCase().startsWith("CRITICAL ERROR") && !message.toUpperCase().includes("OSRM API ERROR")) {
                      setTimeout(() => { 
                          if(errorDiv && errorDiv.textContent === message) errorDiv.textContent = ''; 
                      }, 10000); // Increased timeout for errors
                 }
             } else {
+                // Fallback if the error div is somehow missing (should not happen)
                 console.warn("displayError called, but 'errorMessage' div not found. Falling back to alert. Message:", message);
-                alert(message); 
+                alert(message); // Use alert as a last resort if the dedicated div is missing
             }
         }
 
         document.addEventListener('DOMContentLoaded', function() {
-            const MIN_PICKUP_TIME_MINUTES = 360; 
-            const MIN_PICKUPS_PER_ROUTE = 4; 
+            // --- Constants and Configuration ---
+            const MIN_PICKUP_TIME_MINUTES = 360; // 6:00 AM in minutes from midnight
+            const MIN_PICKUPS_PER_ROUTE = 4; // Minimum number of pickups for a route to be considered potentially feasible by the heuristic
 
-            const map = L.map('map').setView([40.7128, -74.0060], 10); 
+            // --- Leaflet Map Initialization ---
+            const map = L.map('map').setView([40.7128, -74.0060], 10); // Default to NYC
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             }).addTo(map);
-            let routeLayers = L.layerGroup().addTo(map); 
+            let routeLayers = L.layerGroup().addTo(map); // Layer group to manage route polylines and markers
 
+            // --- DOM Element References ---
             const csvFileInput = document.getElementById('csvFile');
             const generateRoutesBtn = document.getElementById('generateRoutesBtn');
             const routesTableBody = document.getElementById('routesTableBody');
             const progressIndicator = document.getElementById('progressIndicator');
             const unroutedPupilsMessage = document.getElementById('unroutedPupilsMessage');
             const progressLogMessagesDiv = document.getElementById('progressLogMessages');
-            const MAX_LOG_MESSAGES = 20; 
+            const MAX_LOG_MESSAGES = 20; // Max messages in the progress log UI
 
+            // --- Utility Functions ---
+
+            // Updates the progress log in the UI
             function updateProgressLog(message) {
                 if (progressLogMessagesDiv) {
                     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                     const newMessageP = document.createElement('p');
                     newMessageP.textContent = `[${timestamp}] ${message}`;
                     progressLogMessagesDiv.appendChild(newMessageP);
+                    // Keep log size manageable
                     while (progressLogMessagesDiv.childNodes.length > MAX_LOG_MESSAGES) {
                         progressLogMessagesDiv.removeChild(progressLogMessagesDiv.firstChild);
                     }
-                    progressLogMessagesDiv.scrollTop = progressLogMessagesDiv.scrollHeight; 
+                    progressLogMessagesDiv.scrollTop = progressLogMessagesDiv.scrollHeight; // Auto-scroll to latest message
                 } else {
-                    console.log(`[Progress Log Attempt]: ${message}`);
+                    console.log(`[Progress Log Attempt]: ${message}`); // Fallback to console if div not found
                 }
             }
 
+            // Converts time string (HH:MM) to minutes from midnight
             function timeToMinutes(timeStr) { 
                 if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) {
                     console.warn(`Invalid time string: ${timeStr}`); return null; 
@@ -207,12 +224,14 @@
                 return hours * 60 + minutes;
             }
 
+            // Converts minutes from midnight to time string (HH:MM)
             function minutesToTime(totalMinutes) {
                 if (totalMinutes === null || totalMinutes === undefined || totalMinutes === Infinity || isNaN(totalMinutes)) return "--:--";
                 const hours = Math.floor(totalMinutes / 60), minutes = Math.round(totalMinutes % 60);
                 return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
             }
 
+            // Shows or hides the progress indicator overlay
             function showProgress(show, message = "Processing...") {
                 const progressTextElement = progressIndicator.querySelector('.text-center > div:not(#progressLogContainer)');
                 if(progressTextElement && progressTextElement.childNodes.length > 1 && progressTextElement.childNodes[1].nodeType === Node.TEXT_NODE) {
@@ -222,21 +241,25 @@
                 }
 
                 progressIndicator.classList.toggle('hidden', !show);
-                generateRoutesBtn.disabled = show;
+                generateRoutesBtn.disabled = show; // Disable button while processing
                 if (show && progressLogMessagesDiv) {
-                    progressLogMessagesDiv.innerHTML = ''; 
+                    progressLogMessagesDiv.innerHTML = ''; // Clear previous logs when starting new process
                 }
             }
             
+            // --- OSRM Routing Service Interaction ---
             const osrmService = {
                 getRoute: async (waypoints) => {
                     if (!waypoints || waypoints.length < 2) {
                         updateProgressLog("OSRM: Invalid waypoints (less than 2).");
                         return { code: "InvalidInput", routes: [] };
                     }
+                    // Format coordinates for OSRM API: lon,lat;lon,lat;...
                     const coordinatesString = waypoints.map(wp => `${wp.lon},${wp.lat}`).join(';');
-                    const url = `http://router.project-osrm.org/route/v1/driving/${coordinatesString}?steps=true&alternatives=false&overview=full`; 
+                    // Use HTTPS for OSRM API calls to prevent mixed content issues
+                    const url = `https://router.project-osrm.org/route/v1/driving/${coordinatesString}?steps=true&alternatives=false&overview=full`; 
                     try {
+                        // Adding a delay before each OSRM call to respect public API rate limits
                         await new Promise(resolve => setTimeout(resolve, 1500)); // Increased delay to 1.5 seconds
                         const response = await fetch(url);
                         if (!response.ok) {
@@ -252,15 +275,15 @@
                             return {
                                 code: "Ok",
                                 routes: [{ 
-                                    duration: route.duration, 
-                                    distance: route.distance, 
-                                    geometry: route.geometry, 
+                                    duration: route.duration, // seconds
+                                    distance: route.distance, // meters
+                                    geometry: route.geometry, // encoded polyline
                                     legs: route.legs ? route.legs.map(leg => ({
                                         duration: leg.duration, 
                                         distance: leg.distance  
-                                    })) : [], 
+                                    })) : [], // duration/distance for each segment
                                 }],
-                                waypoints: data.waypoints 
+                                waypoints: data.waypoints // OSRM's snapped waypoints
                             };
                         } else {
                             updateProgressLog(`OSRM: ${data.code || 'NoRoute'} - ${data.message || 'No route found'} for URL: ${url.substring(0,100)}...`);
@@ -275,8 +298,10 @@
                 }
             };
 
+            // Calculates Haversine distance between two lat/lon points (in km)
+            // Used for simple proximity checks in the heuristic, not for actual routing.
             function haversineDistance(coords1, coords2) { 
-                const R = 6371; 
+                const R = 6371; // Earth's radius in km
                 const lat1 = coords1.lat, lon1 = coords1.lon, lat2 = coords2.lat, lon2 = coords2.lon;
                 const dLat = (lat2 - lat1) * Math.PI / 180, dLon = (lon2 - lon1) * Math.PI / 180;
                 const rLat1 = lat1 * Math.PI / 180, rLat2 = lat2 * Math.PI / 180;
@@ -284,46 +309,61 @@
                 return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))); 
             }
 
+            // Robust CSV line parser, handles quoted fields and escaped quotes.
             function robustParseCsvLine(lineString) {
                 const fields = [];
-                const regex = /(?:"((?:[^"]|"")*)"|([^,]*))(?:,|$)/g;
+                const regex = /(?:"((?:[^"]|"")*)"|([^,]*))(?:,|$)/g; // Regex to handle commas within quotes
                 let match;
-                let lastIndex = -1; 
-                if (typeof lineString !== 'string') return []; 
-                const trimmedLine = lineString.trim(); 
-                if (trimmedLine === "") return [];
+                let lastIndex = -1; // To detect empty trailing fields or infinite loops on bad input
+                if (typeof lineString !== 'string') return []; // Ensure input is a string
+                const trimmedLine = lineString.trim(); // Remove leading/trailing whitespace from the line
+                if (trimmedLine === "") return []; // Skip empty lines
+
                 while ((match = regex.exec(trimmedLine)) !== null) {
+                    // Break if regex gets stuck (e.g. on malformed CSV with only commas)
                     if (match.index === lastIndex && match[0] === '') break; 
                     lastIndex = regex.lastIndex;
+
+                    // If field was quoted, use group 1 (and unescape double quotes)
+                    // Otherwise, use group 2 (unquoted field)
                     let fieldValue = (match[1] !== undefined) ? match[1].replace(/""/g, '"') : (match[2] !== undefined ? match[2] : "");
                     fields.push(fieldValue);
                 }
                 return fields;
             }
 
+            // Parses CSV text into an array of objects.
             function parseCSV(csvText) {
-                const lines = csvText.trim().split(/\r?\n/);
+                const lines = csvText.trim().split(/\r?\n/); // Split by newline, handling CRLF and LF
                 if (lines.length === 0 || (lines.length === 1 && lines[0].trim() === "")) {
                     return { data: [], errors: [{ message: "CSV is empty or contains only whitespace." }] };
                 }
+
                 const headerLine = lines[0];
                 const headersRaw = robustParseCsvLine(headerLine); 
-                const headers = headersRaw.map(h => h.trim()); 
+                const headers = headersRaw.map(h => h.trim()); // Trim whitespace from headers
+                
+                // Basic header validation
                 if (headers.length === 0 || (headers.length === 1 && headers[0] === "" && headersRaw.length === 1)) {
                      return { data: [], errors: [{ message: "CSV header is empty or invalid after parsing." }] };
                 }
+
                 const data = [];
                 const errors = [];
+
                 for (let i = 1; i < lines.length; i++) {
                     const lineStr = lines[i];
-                    if (lineStr.trim() === "") continue; 
+                    if (lineStr.trim() === "") continue; // Skip empty lines
+
                     const values = robustParseCsvLine(lineStr); 
+                    
                     if (values.length !== headers.length) {
                         errors.push({ 
                             message: `Row ${i+1} (content: "${lineStr.substring(0,70)}..."): Expected ${headers.length} columns (Headers: [${headers.join(', ')}]), but found ${values.length} columns (Values: [${values.map(v => `"${v}"`).join(', ')}]). Skipping row.` 
                         });
-                        continue;
+                        continue; // Skip rows with mismatched column counts
                     }
+                    
                     const rowObject = {};
                     headers.forEach((header, index) => { rowObject[header] = values[index]; });
                     data.push(rowObject);
@@ -331,6 +371,9 @@
                 return { data, errors };
             }
             
+            // --- Event Listeners ---
+
+            // Handles CSV file input change
             csvFileInput.addEventListener('change', (event) => {
                 const file = event.target.files[0];
                 if (file) {
@@ -339,6 +382,7 @@
                         const csvText = e.target.result;
                         updateProgressLog(`CSV file "${file.name}" loaded. Parsing...`);
                         const parseResult = parseCSV(csvText);
+
                         if (parseResult.errors.length > 0) {
                             const errorMessages = parseResult.errors.map(err => err.message).join('\n'); 
                             displayError(`CSV parsing issues:\n${errorMessages}`);
@@ -346,23 +390,28 @@
                         } else {
                              updateProgressLog(`CSV parsed successfully. ${parseResult.data.length} rows found.`);
                         }
+                        
+                        // Process and filter parsed data
                         allPupilData = parseResult.data.map(row => ({
-                            ...row, 
+                            ...row, // Spread all original columns
+                            // Explicitly parse and validate critical fields
                             pupil_lat: parseFloat(row.pupil_lat),
                             pupil_lon: parseFloat(row.pupil_lon),
                             school_lat: parseFloat(row.school_lat),
                             school_lon: parseFloat(row.school_lon),
-                            Sess_Beg_Minutes: timeToMinutes(row['Sess_Beg.']) 
+                            Sess_Beg_Minutes: timeToMinutes(row['Sess_Beg.']) // Convert session begin time
                         })).filter(p => 
+                            // Filter out rows with invalid or missing critical data
                             !isNaN(p.pupil_lat) && !isNaN(p.pupil_lon) &&
                             !isNaN(p.school_lat) && !isNaN(p.school_lon) &&
-                            p.Sess_Beg_Minutes !== null && p['School_Code_&_Name'] 
+                            p.Sess_Beg_Minutes !== null && p['School_Code_&_Name'] // Ensure school code is present
                         );
                         updateProgressLog(`${allPupilData.length} valid student records after filtering.`);
+
                         if (allPupilData.length === 0 && parseResult.data.length > 0 && parseResult.errors.length === 0) {
                             displayError("CSV parsed successfully, but no valid student data found after processing filters. Check data values and expected column names (e.g., 'Sess_Beg.', 'School_Code_&_Name').");
                         } else if (allPupilData.length > 0 && parseResult.errors.length === 0) {
-                            displayError(""); 
+                            displayError(""); // Clear previous errors if successful
                             console.log("Parsed Pupil Data (Manual):", allPupilData);
                         } else if (allPupilData.length === 0 && parseResult.errors.length === 0) { 
                              displayError("No data parsed from CSV. The file might be empty or all rows were invalid after processing.");
@@ -371,12 +420,13 @@
                     reader.onerror = function() {
                         displayError("Error reading the CSV file.");
                         updateProgressLog("Error reading the CSV file.");
-                        allPupilData = [];
+                        allPupilData = []; // Reset data on error
                     };
                     reader.readAsText(file);
                 }
             });
 
+            // Handles "Generate Routes" button click
             generateRoutesBtn.addEventListener('click', async () => {
                 if (allPupilData.length === 0) {
                     displayError("Please upload and process a valid CSV file with student data first.");
@@ -384,12 +434,13 @@
                 }
                 showProgress(true, "Generating heuristic routes...");
                 updateProgressLog("Heuristic route generation process started...");
-                unroutedPupilsMessage.textContent = '';
-                routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">Generating heuristic routes...</td></tr>'; 
+                unroutedPupilsMessage.textContent = ''; // Clear previous unrouted message
+                routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">Generating heuristic routes...</td></tr>'; // Placeholder in table
+                
                 try {
-                    await new Promise(resolve => setTimeout(resolve, 50)); 
+                    await new Promise(resolve => setTimeout(resolve, 50)); // Brief pause for UI update
                     generatedRoutesData = await mainRouteGenerationAlgorithm(allPupilData); 
-                    displayRoutes(generatedRoutesData); 
+                    displayRoutes(generatedRoutesData); // Display the heuristically generated routes
                     updateProgressLog(`Heuristic route generation complete. ${generatedRoutesData.length} routes created.`);
                      if (generatedRoutesData.length === 0 && allPupilData.length > 0) { 
                          displayError("No heuristic routes could be formed. Check data or constraints.");
@@ -400,48 +451,55 @@
                     displayError(`Error generating heuristic routes: ${error.message || 'Unknown error'}`);
                     updateProgressLog(`ERROR during heuristic route generation: ${error.message || 'Unknown error'}`);
                 } finally {
-                    showProgress(false); 
+                    showProgress(false); // Hide progress indicator
                 }
             });
             
+            // Handles "Calculate Metrics" button click for a specific route
             async function handleCalculateMetricsClick(routeId) {
                 const routeIndex = generatedRoutesData.findIndex(r => r.id === routeId);
                 if (routeIndex === -1) return;
 
                 const routeToEvaluate = generatedRoutesData[routeIndex];
                 
+                // Update button text to "Calculating..."
                 const tableRow = routesTableBody.querySelector(`tr[data-route-id="${routeId}"]`);
-                const buttonCell = tableRow ? tableRow.cells[7] : null; 
+                const buttonCell = tableRow ? tableRow.cells[7] : null; // Assuming actions cell is the 8th cell (index 7)
                 if (buttonCell) buttonCell.innerHTML = '<span class="text-xs italic text-gray-500">Calculating...</span>';
 
                 showProgress(true, `Calculating metrics for Route ${routeId}...`);
                 updateProgressLog(`Calculating OSRM metrics for Route ${routeId}...`);
 
-                const evaluatedRoute = await evaluateHeuristicRouteWithOSRM(routeToEvaluate, parseInt(routeId.substring(1)));
+                // Evaluate the route using OSRM and apply constraints
+                const evaluatedRoute = await evaluateHeuristicRouteWithOSRM(routeToEvaluate, parseInt(routeId.substring(1))); // Pass routeIdNum
 
-                generatedRoutesData[routeIndex] = evaluatedRoute; 
-                generatedRoutesData[routeIndex].osrmEvaluated = true; 
+                generatedRoutesData[routeIndex] = evaluatedRoute; // Update the route data in the global array
+                generatedRoutesData[routeIndex].osrmEvaluated = true; // Mark as evaluated
                 
                 updateProgressLog(`Metrics calculated for Route ${routeId}. Feasible: ${evaluatedRoute.metrics.isFeasible}. Reason: ${evaluatedRoute.metrics.infeasibilityReason || 'N/A'}`);
                 
-                displayRoutes(generatedRoutesData); 
+                displayRoutes(generatedRoutesData); // Re-render the routes table
                 showProgress(false);
             }
 
 
-            async function evaluateHeuristicRouteWithOSRM(originalRouteData, routeIdNum) {
-                const route = JSON.parse(JSON.stringify(originalRouteData));
-                route.id = `R${routeIdNum}`; 
-                route.pupils = []; 
-                route.schoolStops = [];
-                route.mapWaypoints = []; 
-                route.metrics = { 
+            // --- Core Routing Logic ---
+
+            // Evaluates a single heuristically generated route using OSRM and checks constraints.
+            async function evaluateHeuristicRouteWithOSRM(originalRouteData, routeIdNum) { // routeIdNum is the numeric part of the ID
+                const route = JSON.parse(JSON.stringify(originalRouteData)); // Deep copy to avoid modifying original
+                route.id = `R${routeIdNum}`; // Ensure ID is consistent
+                route.pupils = []; // Will store detailed pupil info with timings
+                route.schoolStops = []; // Will store detailed school stop info with timings
+                route.mapWaypoints = []; // Waypoints for map display after OSRM
+                route.metrics = { // Initialize metrics
                     numberOfPickups: 0, numberOfSchools: 0, maxTravelTimeObserved: 'N/A', 
                     firstPickupTimeActual: 'N/A', isFeasible: 'Pending', totalRouteDurationMinutes: 'N/A', 
                     infeasibilityReason: "" 
                 };
                 route.osrmPolyline = null;
 
+                // Filter out consecutive duplicate waypoints before sending to OSRM
                 const waypointsForOSRMFiltered = originalRouteData.orderedWaypointsForOSRM.filter((wp, index, self) =>
                     index === 0 || !(wp.lat === self[index-1].lat && wp.lon === self[index-1].lon)
                 );
@@ -450,7 +508,7 @@
                     route.metrics.isFeasible = false;
                     route.metrics.infeasibilityReason = "Not enough unique waypoints for OSRM.";
                     updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
-                    return route; 
+                    return route; // Early exit if not enough waypoints
                 }
 
                 const osrmResult = await osrmService.getRoute(waypointsForOSRMFiltered);
@@ -459,25 +517,28 @@
                     route.metrics.isFeasible = false;
                     route.metrics.infeasibilityReason = `OSRM routing failed: ${osrmResult.message || osrmResult.code}`;
                     updateProgressLog(`R${routeIdNum} Eval: OSRM failed - ${route.metrics.infeasibilityReason}`);
-                    return route; 
+                    return route; // Early exit if OSRM fails
                 }
                 
-                route.osrmPolyline = osrmResult.routes[0].geometry; 
+                route.osrmPolyline = osrmResult.routes[0].geometry; // Store encoded polyline
                 const osrmRouteData = osrmResult.routes[0];
-                const osrmLegs = osrmRouteData.legs;
-                let currentTimeMinutes = MIN_PICKUP_TIME_MINUTES; 
+                const osrmLegs = osrmRouteData.legs; // Duration/distance for each segment between waypoints
+                let currentTimeMinutes = MIN_PICKUP_TIME_MINUTES; // Start with the earliest possible pickup time
                 let firstPickupActualTime = Infinity;
                 let pickupSequence = 1;
-                let osrmLegCounter = 0; 
+                let osrmLegCounter = 0; // To iterate through OSRM legs
 
+                // --- Simulate Pickups ---
                 for (let i = 0; i < originalRouteData.pupilsData.length; i++) {
                     const pupilData = originalRouteData.pupilsData[i];
                     let travelToThisPickupMinutes = 0;
-                    if (i > 0) {
+
+                    if (i > 0) { // For subsequent pickups, add travel time from previous stop
                         const prevPupilData = originalRouteData.pupilsData[i-1];
+                        // Only add OSRM leg duration if the current pupil is at a different location than the previous
                         if (pupilData.pupil_lat !== prevPupilData.pupil_lat || pupilData.pupil_lon !== prevPupilData.pupil_lon) {
                             if (osrmLegs && osrmLegCounter < osrmLegs.length) {
-                                travelToThisPickupMinutes = osrmLegs[osrmLegCounter].duration / 60;
+                                travelToThisPickupMinutes = osrmLegs[osrmLegCounter].duration / 60; // Convert seconds to minutes
                                 osrmLegCounter++;
                             } else {
                                 route.metrics.isFeasible = false;
@@ -489,9 +550,11 @@
                         currentTimeMinutes += travelToThisPickupMinutes;
                     }
                     
+                    // Determine actual pickup time (cannot be earlier than MIN_PICKUP_TIME_MINUTES)
                     const pupilPickupTime = (i === 0) ? Math.max(currentTimeMinutes, MIN_PICKUP_TIME_MINUTES) : currentTimeMinutes;
-                    if (i === 0) currentTimeMinutes = pupilPickupTime; 
+                    if (i === 0) currentTimeMinutes = pupilPickupTime; // Adjust current time if first pickup was delayed
 
+                    // Check if pickup is too early (should be caught by Math.max, but good for sanity)
                     if (pupilPickupTime < MIN_PICKUP_TIME_MINUTES) { 
                         route.metrics.isFeasible = false;
                         route.metrics.infeasibilityReason = `Pupil ${pupilData.Pupil_Id_No} pickup too early: ${minutesToTime(pupilPickupTime)}`;
@@ -499,13 +562,16 @@
                         return route;
                     }
                     firstPickupActualTime = Math.min(firstPickupActualTime, pupilPickupTime);
-                    const waitTime = (i === 0) ? 3 : 1; 
+
+                    const waitTime = (i === 0) ? 3 : 1; // 3 min wait for first pickup, 1 min for others
                     currentTimeMinutes += waitTime; 
 
                     route.pupils.push({ data: pupilData, pickupTimeMinutes: pupilPickupTime, arrivalAtSchoolMinutes: null, travelTimeMinutes: null });
                     route.mapWaypoints.push({ lat: pupilData.pupil_lat, lon: pupilData.pupil_lon, type: 'pickup', label: `P${pickupSequence}`, hndcCode: pupilData.Hndc_Code, pupilId: pupilData.Pupil_Id_No, sequence: pickupSequence++ });
                 }
                 
+                // --- Simulate School Drop-offs ---
+                // Group pupils by school and sort schools by session start time
                 const schoolDataMap = new Map();
                 originalRouteData.pupilsData.forEach(p => {
                     if (!schoolDataMap.has(p['School_Code_&_Name'])) {
@@ -513,17 +579,21 @@
                             schoolCode: p['School_Code_&_Name'], schoolLat: p.school_lat, schoolLon: p.school_lon,
                             sessionBeginMinutes: p.Sess_Beg_Minutes, 
                             estimatedArrivalMinutes: null,
+                            // Track which pupils are going to this school for this route
                             pupilsToDrop: originalRouteData.pupilsData.filter(pd => pd['School_Code_&_Name'] === p['School_Code_&_Name']).map(pd => pd.Pupil_Id_No)
                         });
                     }
                 });
                 const sortedSchoolEntries = Array.from(schoolDataMap.values()).sort((a,b) => a.sessionBeginMinutes - b.sessionBeginMinutes);
+                
+                // Determine the last location before starting school drop-offs
                 let lastLocationForOsrm = originalRouteData.pupilsData.length > 0 ? 
                     { lat: originalRouteData.pupilsData[originalRouteData.pupilsData.length-1].pupil_lat, lon: originalRouteData.pupilsData[originalRouteData.pupilsData.length-1].pupil_lon } : 
-                    null;
+                    null; // If no pupils, this will be null (OSRM check earlier should catch this)
 
                 for (const schoolEntry of sortedSchoolEntries) {
                     let travelToSchoolMinutes = 0;
+                    // Add travel time from last stop (either last pickup or previous school)
                     if (lastLocationForOsrm && (lastLocationForOsrm.lat !== schoolEntry.schoolLat || lastLocationForOsrm.lon !== schoolEntry.schoolLon)) {
                         if (osrmLegs && osrmLegCounter < osrmLegs.length) {
                             travelToSchoolMinutes = osrmLegs[osrmLegCounter].duration / 60;
@@ -537,21 +607,26 @@
                     }
                     currentTimeMinutes += travelToSchoolMinutes;
                     schoolEntry.estimatedArrivalMinutes = currentTimeMinutes;
+
+                    // Feasibility Check: Arrival time vs Session start time (allow 1 min grace for rounding)
                     if (schoolEntry.estimatedArrivalMinutes > schoolEntry.sessionBeginMinutes + 1) { 
                         route.metrics.isFeasible = false;
                         route.metrics.infeasibilityReason = `Late for school ${schoolEntry.schoolCode}: Arr ${minutesToTime(schoolEntry.estimatedArrivalMinutes)} vs Sess ${minutesToTime(schoolEntry.sessionBeginMinutes)}`;
                         updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
                         return route;
                     }
+
                     route.schoolStops.push(schoolEntry); 
                     route.mapWaypoints.push({ lat: schoolEntry.schoolLat, lon: schoolEntry.schoolLon, type: 'school', label: `S: ${schoolEntry.schoolCode.substring(0,6)}`, schoolCode: schoolEntry.schoolCode });
-                    lastLocationForOsrm = { lat: schoolEntry.schoolLat, lon: schoolEntry.schoolLon };
+                    lastLocationForOsrm = { lat: schoolEntry.schoolLat, lon: schoolEntry.schoolLon }; // Update last location
                 }
 
+                // --- Calculate Pupil Travel Times and Final Metrics ---
                 let maxTravelTimeObserved = 0;
                 for (let pupilOnRoute of route.pupils) {
                     const schoolInfo = route.schoolStops.find(s => s.schoolCode === pupilOnRoute.data['School_Code_&_Name']);
                     if (!schoolInfo || schoolInfo.estimatedArrivalMinutes === null) {
+                        // This should not happen if logic above is correct
                         route.metrics.isFeasible = false;
                         route.metrics.infeasibilityReason = `Could not determine arrival for pupil ${pupilOnRoute.data.Pupil_Id_No} at school.`;
                         updateProgressLog(`R${routeIdNum} Eval: ${route.metrics.infeasibilityReason}`);
@@ -560,6 +635,8 @@
                     pupilOnRoute.arrivalAtSchoolMinutes = schoolInfo.estimatedArrivalMinutes;
                     pupilOnRoute.travelTimeMinutes = pupilOnRoute.arrivalAtSchoolMinutes - pupilOnRoute.pickupTimeMinutes;
                     maxTravelTimeObserved = Math.max(maxTravelTimeObserved, pupilOnRoute.travelTimeMinutes);
+
+                    // Feasibility Check: Max travel time per student
                     if (pupilOnRoute.travelTimeMinutes > 100) {
                         route.metrics.isFeasible = false;
                         route.metrics.infeasibilityReason = `Pupil ${pupilOnRoute.data.Pupil_Id_No} exceeds max travel time (${Math.round(pupilOnRoute.travelTimeMinutes)} min).`;
@@ -568,6 +645,7 @@
                     }
                 }
                 
+                // Populate final metrics for the route
                 route.metrics.numberOfPickups = route.pupils.length;
                 route.metrics.numberOfSchools = route.schoolStops.length;
                 route.metrics.maxTravelTimeObserved = Math.round(maxTravelTimeObserved);
@@ -575,49 +653,60 @@
                 const lastDropoffTime = route.schoolStops.reduce((max, s) => Math.max(max, s.estimatedArrivalMinutes || 0), 0);
                 route.metrics.totalRouteDurationMinutes = (lastDropoffTime > firstPickupActualTime && firstPickupActualTime !== Infinity && lastDropoffTime !== 0) ? Math.round(lastDropoffTime - firstPickupActualTime) : 0;
 
-                let isFeasible = true; 
+                // --- Final Feasibility Checks based on constraints ---
+                let isFeasible = true; // Assume feasible until a check fails
                 if (route.metrics.numberOfPickups === 0 || route.metrics.numberOfPickups > 15) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Invalid number of pickups."; }
+                // MIN_PICKUPS_PER_ROUTE is a heuristic guide, but OSRM evaluated routes can be valid even if below this, if they meet all other criteria.
+                // However, the problem states "min 4 students (otherwise marked infeasible)"
                 if (route.metrics.numberOfPickups > 0 && route.metrics.numberOfPickups < MIN_PICKUPS_PER_ROUTE) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = `Too few pickups (${route.metrics.numberOfPickups}, min ${MIN_PICKUPS_PER_ROUTE}).`; }
                 if (route.metrics.numberOfSchools > 5) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Exceeds max schools."; }
                 if (route.metrics.numberOfSchools === 0 && route.metrics.numberOfPickups > 0) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Pupils assigned but no schools on route.";}
+                // maxTravelTimeObserved check is already done per pupil, this is a redundant check but harmless
                 if (maxTravelTimeObserved > 100) { isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Exceeds max travel time.";}
+                // firstPickupActualTime checks (too early or invalid)
                 if (firstPickupActualTime === Infinity && route.metrics.numberOfPickups > 0) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "Invalid first pickup time.";}
                 if (firstPickupActualTime < MIN_PICKUP_TIME_MINUTES) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = "First pickup too early.";}
+                // School arrival time checks are already done per school
                 route.schoolStops.forEach(s => { if (s.estimatedArrivalMinutes === null || s.estimatedArrivalMinutes > s.sessionBeginMinutes + 1) {isFeasible = false; if(!route.metrics.infeasibilityReason) route.metrics.infeasibilityReason = `Late for school ${s.schoolCode}.`;} });
                 
                 route.metrics.isFeasible = isFeasible;
-                if (!isFeasible && !route.metrics.infeasibilityReason) {
+                if (!isFeasible && !route.metrics.infeasibilityReason) { // Catch-all reason if none specific was set
                     route.metrics.infeasibilityReason = "General constraint violation.";
                 }
                 return route;
             }
 
 
+            // Main heuristic algorithm to generate initial routes.
+            // This is a greedy nearest-neighbor type heuristic.
             async function mainRouteGenerationAlgorithm(pupilDataList) {
                 updateProgressLog(`Starting heuristic algorithm with ${pupilDataList.length} pupils.`);
-                let unassignedPupilsInput = JSON.parse(JSON.stringify(pupilDataList)); 
-                let assignedPupilIds = new Set();
+                let unassignedPupilsInput = JSON.parse(JSON.stringify(pupilDataList)); // Work with a copy
+                let assignedPupilIds = new Set(); // Track assigned pupils
                 let routes = [];
                 let routeIdCounter = 1;
                 
+                // Sort pupils primarily by session start time, then by ID as a tie-breaker.
+                // This helps in seeding routes with pupils who need to arrive earlier.
                 unassignedPupilsInput.sort((a, b) => (a.Sess_Beg_Minutes - b.Sess_Beg_Minutes) || (String(a.Pupil_Id_No).localeCompare(String(b.Pupil_Id_No))));
                 updateProgressLog("Pupils sorted by session start time.");
 
-                let iterationGuard = 0; 
-                const MAX_MAIN_ITERATIONS = unassignedPupilsInput.length + 10; 
+                let iterationGuard = 0; // Safety break for the main loop
+                const MAX_MAIN_ITERATIONS = unassignedPupilsInput.length + 10; // Allow a few extra iterations
 
                 while (unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No)).length > 0 && iterationGuard < MAX_MAIN_ITERATIONS) {
                     iterationGuard++;
                     let currentRouteAttempt = {
-                        pupilsData: [], 
-                        orderedWaypointsForOSRM: [] 
+                        pupilsData: [], // Pupils assigned to this route attempt
+                        orderedWaypointsForOSRM: [] // Waypoints in order for OSRM (pickups then schools)
                     };
 
                     const availablePupils = unassignedPupilsInput.filter(p => !assignedPupilIds.has(p.Pupil_Id_No));
-                    if (availablePupils.length === 0) break;
+                    if (availablePupils.length === 0) break; // All pupils assigned
 
                     updateProgressLog(`Attempting to build Heuristic Route R${routeIdCounter}. ${availablePupils.length} pupils remaining.`);
                     
+                    // Seed the route with the first available (earliest session) unassigned pupil
                     let firstPupilForRoute = availablePupils[0]; 
                                         
                     updateProgressLog(`Heuristic R${routeIdCounter}: Seeded with pupil ${firstPupilForRoute.Pupil_Id_No}.`);
@@ -625,21 +714,26 @@
                     assignedPupilIds.add(firstPupilForRoute.Pupil_Id_No); 
                     let lastAddedPupilCoords = { lat: firstPupilForRoute.pupil_lat, lon: firstPupilForRoute.pupil_lon };
 
-                    while (currentRouteAttempt.pupilsData.length < 15) {
+                    // Greedily add nearby pupils to the current route attempt
+                    while (currentRouteAttempt.pupilsData.length < 15) { // Max 15 pupils per route
                         let closestPupil = null;
                         let closestDistance = Infinity;
                         
                         const candidatesForRoute = unassignedPupilsInput.filter(p => 
                             !assignedPupilIds.has(p.Pupil_Id_No) 
+                            // No complex time window checks here, OSRM evaluation will handle that.
+                            // This heuristic focuses on proximity and school count.
                         );
 
-                        if (candidatesForRoute.length === 0) break; 
+                        if (candidatesForRoute.length === 0) break; // No more unassigned pupils
 
                         for (const candidate of candidatesForRoute) {
                             const dist = haversineDistance(lastAddedPupilCoords, { lat: candidate.pupil_lat, lon: candidate.pupil_lon });
+                            
+                            // Check school constraint: max 5 distinct schools per route
                             const tempSchoolSet = new Set(currentRouteAttempt.pupilsData.map(p => p['School_Code_&_Name']));
                             tempSchoolSet.add(candidate['School_Code_&_Name']);
-                            if (tempSchoolSet.size > 5) continue; 
+                            if (tempSchoolSet.size > 5) continue; // Skip if adding this pupil exceeds school limit
 
                             if (dist < closestDistance) {
                                 closestDistance = dist;
@@ -652,14 +746,16 @@
                             assignedPupilIds.add(closestPupil.Pupil_Id_No); 
                             lastAddedPupilCoords = { lat: closestPupil.pupil_lat, lon: closestPupil.pupil_lon };
                         } else {
-                            break; 
+                            break; // No suitable pupil found to add
                         }
                     }
                     updateProgressLog(`Heuristic R${routeIdCounter}: Built with ${currentRouteAttempt.pupilsData.length} pupils.`);
 
+                    // Prepare waypoints for OSRM: all pickups first, then all unique schools sorted by session time
                     currentRouteAttempt.orderedWaypointsForOSRM = currentRouteAttempt.pupilsData.map(p => ({
                         lat: p.pupil_lat, lon: p.pupil_lon, type: 'pickup', pupilId: p.Pupil_Id_No, hndcCode: p.Hndc_Code,
                     }));
+                    
                     const schoolsOnRoute = new Map();
                     currentRouteAttempt.pupilsData.forEach(p => {
                         if (!schoolsOnRoute.has(p['School_Code_&_Name'])) {
@@ -674,22 +770,24 @@
                         currentRouteAttempt.orderedWaypointsForOSRM.push({ lat: s.schoolLat, lon: s.schoolLon, type: 'school', schoolCode: s.schoolCode });
                     });
                     
+                    // Store the heuristically generated route if it has pupils
                     if (currentRouteAttempt.pupilsData.length > 0) {
                         const heuristicRoute = {
                             id: `R${routeIdCounter}`,
-                            pupilsData: [...currentRouteAttempt.pupilsData],
-                            orderedWaypointsForOSRM: [...currentRouteAttempt.orderedWaypointsForOSRM],
-                            metrics: { 
+                            pupilsData: [...currentRouteAttempt.pupilsData], // Store the pupils
+                            orderedWaypointsForOSRM: [...currentRouteAttempt.orderedWaypointsForOSRM], // Store waypoints for OSRM
+                            metrics: { // Initialize metrics, to be filled by OSRM evaluation
                                 numberOfPickups: currentRouteAttempt.pupilsData.length,
                                 numberOfSchools: schoolsOnRoute.size,
                                 maxTravelTimeObserved: 'N/A',
                                 firstPickupTimeActual: 'N/A',
-                                isFeasible: 'Pending', 
+                                isFeasible: 'Pending', // OSRM evaluation will determine this
                                 totalRouteDurationMinutes: 'N/A',
                                 infeasibilityReason: ''
                             },
-                            osrmEvaluated: false,
+                            osrmEvaluated: false, // Flag to indicate if OSRM metrics have been calculated
                             osrmPolyline: null,
+                            // Initial map waypoints based on heuristic order (will be refined by OSRM evaluation)
                             mapWaypoints: currentRouteAttempt.orderedWaypointsForOSRM.map((wp, idx) => ({
                                 ...wp,
                                 sequence: wp.type === 'pickup' ? (currentRouteAttempt.orderedWaypointsForOSRM.filter((w, i) => w.type === 'pickup' && i <= idx).length) : undefined
@@ -698,8 +796,9 @@
                         routes.push(heuristicRoute);
                         routeIdCounter++; 
                     } else {
+                         // This case should ideally not be hit if the seed pupil is always added.
                          updateProgressLog(`Heuristic R${routeIdCounter} built with 0 pupils. Discarding and unassigning seed.`);
-                         assignedPupilIds.delete(firstPupilForRoute.Pupil_Id_No); 
+                         assignedPupilIds.delete(firstPupilForRoute.Pupil_Id_No); // Unassign seed if route is empty
                     }
                 } 
 
@@ -713,82 +812,97 @@
             }
 
 
+            // --- UI Display Functions ---
+
+            // Displays the generated routes in the HTML table
             function displayRoutes(routes) {
-                routesTableBody.innerHTML = ''; 
+                routesTableBody.innerHTML = ''; // Clear existing rows
                 if (!routes || !routes.length) { 
                     routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">No routes generated.</td></tr>'; return;
                 }
                 let validRoutesDisplayed = 0;
                 routes.forEach(route => {
+                    // Only display routes that have pupils (heuristic might create empty ones if logic allows)
                     if(!route || !route.pupilsData || route.pupilsData.length === 0) return;  
                     validRoutesDisplayed++;
+
                     const r = routesTableBody.insertRow();
-                    r.setAttribute('data-route-id', route.id); 
+                    r.setAttribute('data-route-id', route.id); // Store route ID for easy access
+                    // Apply styling based on feasibility status
                     r.className = `cursor-pointer hover:bg-gray-50 ${route.metrics.isFeasible === true ? '' : (route.metrics.isFeasible === false ? 'bg-red-50 text-red-700' : '')}`;
                     
+                    // Populate table cells
                     r.insertCell().textContent = route.id;
                     r.insertCell().textContent = route.metrics.numberOfPickups;
                     r.insertCell().textContent = route.metrics.numberOfSchools;
                     r.insertCell().textContent = route.metrics.maxTravelTimeObserved;
                     r.insertCell().textContent = route.metrics.firstPickupTimeActual;
                     const feasibleCell = r.insertCell();
-                    feasibleCell.textContent = typeof route.metrics.isFeasible === 'boolean' ? (route.metrics.isFeasible ? 'Yes' : 'No') : route.metrics.isFeasible; 
+                    feasibleCell.textContent = typeof route.metrics.isFeasible === 'boolean' ? (route.metrics.isFeasible ? 'Yes' : 'No') : route.metrics.isFeasible; // Handle 'Pending' state
                     if(typeof route.metrics.isFeasible === 'boolean') {
                         feasibleCell.className = route.metrics.isFeasible ? 'text-green-600 font-semibold' : 'text-red-600 font-semibold';
                     }
                     r.insertCell().textContent = route.metrics.totalRouteDurationMinutes;
                     
                     const actionsCell = r.insertCell();
-                    actionsCell.innerHTML = ''; 
+                    actionsCell.innerHTML = ''; // Clear previous actions
                     if (!route.osrmEvaluated) {
                         const calcButton = document.createElement('button');
                         calcButton.textContent = 'Calc Metrics';
                         calcButton.className = 'bg-green-500 hover:bg-green-600 text-white text-xs py-1 px-2 rounded shadow';
                         calcButton.onclick = (event) => {
-                            event.stopPropagation(); 
+                            event.stopPropagation(); // Prevent row click event when button is clicked
                             handleCalculateMetricsClick(route.id);
                         };
                         actionsCell.appendChild(calcButton);
                     } else {
                         actionsCell.textContent = route.metrics.isFeasible ? 'Calculated' : `Failed (${(route.metrics.infeasibilityReason || '').substring(0,15)}...)`;
-                        actionsCell.title = route.metrics.infeasibilityReason || '';
+                        actionsCell.title = route.metrics.infeasibilityReason || ''; // Show full reason on hover
                         actionsCell.className = 'text-xs italic text-gray-500';
                     }
 
+                    // Add click listener to row to display route on map
                     r.addEventListener('click', () => displayRouteOnMap(route));
                 });
-                if(validRoutesDisplayed === 0){ 
+                if(validRoutesDisplayed === 0){ // If all generated routes were empty
                      routesTableBody.innerHTML = '<tr><td colspan="8" class="text-center py-4">No valid routes with pupils were generated.</td></tr>';
                 }
             }
 
+            // Displays a selected route (waypoints and polyline) on the Leaflet map
             function displayRouteOnMap(route) {
-                routeLayers.clearLayers(); 
+                routeLayers.clearLayers(); // Clear previous route from map
+                
+                // Use OSRM evaluated waypoints if available, otherwise use heuristic waypoints
                 const waypointsToDisplay = route.osrmEvaluated ? route.mapWaypoints : 
-                    (route.orderedWaypointsForOSRM || []).map((wp, idx) => ({ 
+                    (route.orderedWaypointsForOSRM || []).map((wp, idx) => ({ // Fallback to heuristic waypoints if not OSRM evaluated
                         ...wp,
+                        // Add sequence number for pickup waypoints if not already present
                         sequence: wp.type === 'pickup' ? (route.orderedWaypointsForOSRM.filter((w, i) => w.type === 'pickup' && i <= idx).length) : undefined
                     }));
 
                 if (!waypointsToDisplay || waypointsToDisplay.length === 0) return;
                 
-                const latLngs = [];
+                const latLngs = []; // For polyline and map bounds
                 waypointsToDisplay.forEach(wp => {
                     if (typeof wp.lat !== 'number' || typeof wp.lon !== 'number' || isNaN(wp.lat) || isNaN(wp.lon)) { 
                         console.warn("Invalid waypoint coordinates for map display:", wp);
-                        return; 
+                        return; // Skip invalid waypoints
                     }
                     latLngs.push([wp.lat, wp.lon]);
+
+                    // Create custom HTML markers for pickups and schools
                     let markerHtml, markerSize, iconAnchorY;
                     if (wp.type === 'pickup') {
-                        markerSize = [25, 25]; iconAnchorY = markerSize[1];
+                        markerSize = [25, 25]; iconAnchorY = markerSize[1]; // Anchor at bottom-center
                         markerHtml = `<div class="pickup-marker-icon flex items-center justify-center" style="width:${markerSize[0]}px; height:${markerSize[1]}px; line-height:${markerSize[1]}px;">${wp.sequence || '?'}</div>`;
-                        const pInfo = route.pupils?.find(p=>p.data.Pupil_Id_No === wp.pupilId) || route.pupilsData?.find(p=>p.Pupil_Id_No === wp.pupilId);
+                        const pInfo = route.pupils?.find(p=>p.data.Pupil_Id_No === wp.pupilId) || route.pupilsData?.find(p=>p.Pupil_Id_No === wp.pupilId); // Get pupil info for popup
                         L.marker([wp.lat, wp.lon], { icon: L.divIcon({ className: '', html: markerHtml, iconSize: markerSize, iconAnchor: [markerSize[0]/2, iconAnchorY] }) })
                          .addTo(routeLayers).bindPopup(`<b>Pickup ${wp.sequence || '?'}</b><br>Pupil ID: ${wp.pupilId || 'N/A'}<br>Medical: ${wp.hndcCode || 'N/A'}<br>Time: ${pInfo && pInfo.pickupTimeMinutes ? minutesToTime(pInfo.pickupTimeMinutes) : 'N/A'}`);
                     } else if (wp.type === 'school') {
-                        markerSize = [30,30]; iconAnchorY = markerSize[1];
+                        markerSize = [30,30]; iconAnchorY = markerSize[1]; // Anchor at bottom-center
                         markerHtml = `<div class="school-marker-icon flex items-center justify-center" style="min-width:${markerSize[0]}px; height:${markerSize[1]}px; line-height:${markerSize[1]}px;">S</div>`;
+                        // Get school info for popup (check both OSRM-evaluated structure and heuristic structure)
                         const sData = route.schoolStops?.find(s => s.schoolCode === wp.schoolCode) || 
                                       Array.from(new Map((route.pupilsData || []).map(p => [p['School_Code_&_Name'], p])).values()).find(s => s['School_Code_&_Name'] === wp.schoolCode);
                         L.marker([wp.lat, wp.lon], { icon: L.divIcon({ className: '', html: markerHtml, iconSize: markerSize, iconAnchor: [markerSize[0]/2, iconAnchorY]}) })
@@ -796,24 +910,28 @@
                     }
                 });
 
-                if (route.osrmPolyline && typeof L.PolylineUtil !== 'undefined') {
+                // Draw route polyline if available (from OSRM)
+                if (route.osrmPolyline && typeof L.PolylineUtil !== 'undefined' && typeof L.PolylineUtil.decode === 'function') {
                     try {
                         const decodedPolyline = L.PolylineUtil.decode(route.osrmPolyline);
                         L.polyline(decodedPolyline, { color: 'green', weight: 4, opacity: 0.8 }).addTo(routeLayers);
                     } catch (e) {
-                        console.error("Error decoding OSRM polyline:", e);
+                        console.error("Error decoding OSRM polyline:", e, "Polyline string:", route.osrmPolyline);
+                        // Fallback: draw straight lines between waypoints if decoding fails
                         if (latLngs.length > 1) L.polyline(latLngs, { color: 'orange', weight: 3, opacity: 0.7, dashArray: '5, 5' }).addTo(routeLayers); 
                     }
                 } else if (latLngs.length > 1) {
+                     // If no OSRM polyline, draw straight lines (e.g., for heuristic display before OSRM calc)
                      L.polyline(latLngs, { color: 'orange', weight: 3, opacity: 0.7, dashArray: '5, 5' }).addTo(routeLayers); 
                 }
 
+                // Fit map bounds to the displayed route
                 if (latLngs.length > 0) { 
                     try {
                         const bounds = L.latLngBounds(latLngs);
                         if (bounds.isValid()) {
-                           map.fitBounds(bounds, {padding: [50,50]});
-                        } else if (latLngs.length === 1) { 
+                           map.fitBounds(bounds, {padding: [50,50]}); // Add padding around bounds
+                        } else if (latLngs.length === 1) { // If only one point, center map on it
                            map.setView(latLngs[0], 15);
                         }
                     } catch (e) {
